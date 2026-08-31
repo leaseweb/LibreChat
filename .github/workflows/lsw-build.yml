@@ -1,20 +1,29 @@
-# Leaseweb build. Publishes ghcr.io/leaseweb/librechat from our tags.
+# Leaseweb build. Publishes ghcr.io/leaseweb/librechat.
 # Upstream's own image workflows are disabled on this fork; see AI-414.
 name: LSW Build and Push Image
 
 on:
   push:
+    branches:
+      - leaseweb
     tags:
       - 'v*-lsw.*'
+  pull_request:
+    branches:
+      - leaseweb
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Image tag to publish (e.g. v0.8.6-lsw.1)'
+        description: 'Image tag to publish (e.g. v0.8.6-lsw.2)'
         required: true
 
 permissions:
-  contents: read
+  contents: write
   packages: write
+
+concurrency:
+  group: lsw-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -25,15 +34,35 @@ jobs:
         with:
           fetch-depth: 0
 
+      # A leaseweb push takes its version from package.json, the way the middleman
+      # takes it from pyproject.toml. An existing tag means nobody bumped it.
       - name: Resolve image tag and build metadata
+        id: meta
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            IMAGE_TAG="${{ inputs.tag }}"
-          else
-            IMAGE_TAG="${GITHUB_REF_NAME}"
-          fi
-          printf 'IMAGE_TAG=%s\n'    "$IMAGE_TAG" >> "$GITHUB_ENV"
+          RELEASE=false
+          case "${{ github.event_name }}" in
+            workflow_dispatch)
+              IMAGE_TAG="${{ inputs.tag }}"
+              ;;
+            pull_request)
+              IMAGE_TAG="pr-${{ github.event.number }}"
+              ;;
+            push)
+              if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+                IMAGE_TAG="$GITHUB_REF_NAME"
+              else
+                IMAGE_TAG="$(node -p "require('./package.json').version")"
+                if git rev-parse -q --verify "refs/tags/$IMAGE_TAG" >/dev/null; then
+                  echo "::error::Tag $IMAGE_TAG already exists. Bump \"version\" in package.json (and package-lock.json)."
+                  exit 1
+                fi
+                RELEASE=true
+              fi
+              ;;
+          esac
+          printf 'image_tag=%s\n' "$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          printf 'release=%s\n'   "$RELEASE"   >> "$GITHUB_OUTPUT"
           printf 'BUILD_COMMIT=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           printf 'BUILD_BRANCH=%s\n' "$GITHUB_REF_NAME" >> "$GITHUB_ENV"
           printf 'BUILD_DATE=%s\n'   "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
@@ -55,12 +84,26 @@ jobs:
           context: .
           file: Dockerfile
           target: node
-          push: true
+          # A pull request from a fork gets a read-only token and cannot push.
+          push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
           platforms: linux/amd64
-          tags: ghcr.io/${{ github.repository_owner }}/librechat:${{ env.IMAGE_TAG }}
+          tags: ghcr.io/${{ github.repository_owner }}/librechat:${{ steps.meta.outputs.image_tag }}
           build-args: |
             BUILD_COMMIT=${{ env.BUILD_COMMIT }}
             BUILD_BRANCH=${{ env.BUILD_BRANCH }}
             BUILD_DATE=${{ env.BUILD_DATE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Tagged after the image is published, so a failed build never leaves a tag
+      # with nothing behind it.
+      - name: Tag the release
+        if: steps.meta.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_TAG: ${{ steps.meta.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f "ref=refs/tags/$IMAGE_TAG" \
+            -f "sha=$GITHUB_SHA"
