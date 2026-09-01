@@ -46,7 +46,7 @@ jobs:
               IMAGE_TAG="${{ inputs.tag }}"
               ;;
             pull_request)
-              IMAGE_TAG="pr-${{ github.event.number }}"
+              IMAGE_TAG="PR-${{ github.event.number }}"
               ;;
             push)
               if [ "$GITHUB_REF_TYPE" = "tag" ]; then
