@@ -1,4 +1,4 @@
-import { logger, decrypt } from '@librechat/data-schemas';
+import { logger, decrypt, decryptV2, decryptV3 } from '@librechat/data-schemas';
 import type { IPluginAuth, PluginAuthMethods } from '@librechat/data-schemas';
 
 export interface GetPluginAuthMapParams {
@@ -9,6 +9,22 @@ export interface GetPluginAuthMapParams {
 }
 
 export type PluginAuthMap = Record<string, Record<string, string>>;
+
+/**
+ * Decrypts a stored plugin auth value, dispatching on its format.
+ * - "v3:"-prefixed values use decryptV3.
+ * - Other colon-delimited values use decryptV2.
+ * - Plain hex values are legacy v1 and use decrypt.
+ */
+async function decryptPluginAuthValue(storedValue: string): Promise<string> {
+  if (storedValue.startsWith('v3:')) {
+    return decryptV3(storedValue);
+  }
+  if (storedValue.includes(':')) {
+    return decryptV2(storedValue);
+  }
+  return decrypt(storedValue);
+}
 
 /**
  * Retrieves and decrypts authentication values for multiple plugins
@@ -53,7 +69,7 @@ export async function getPluginAuthMap({
         decryptionPromises.push(
           (async () => {
             try {
-              const decryptedValue = await decrypt(auth.value);
+              const decryptedValue = await decryptPluginAuthValue(auth.value);
               authMap[pluginKey][auth.authField] = decryptedValue;
             } catch (error) {
               const message = error instanceof Error ? error.message : 'Unknown error';
