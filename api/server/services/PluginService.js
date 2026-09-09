@@ -1,6 +1,24 @@
 const { logger } = require('@librechat/data-schemas');
-const { encrypt, decrypt } = require('@librechat/api');
+const { decrypt, decryptV2, encryptV3, decryptV3 } = require('@librechat/api');
 const { findOnePluginAuth, updatePluginAuth, deletePluginAuth } = require('~/models');
+
+/**
+ * Decrypts a stored plugin auth value, dispatching on its format.
+ * - "v3:"-prefixed values use decryptV3.
+ * - Other colon-delimited values use decryptV2.
+ * - Plain hex values are legacy v1 and use decrypt.
+ * @param {string} storedValue
+ * @returns {Promise<string>}
+ */
+const decryptPluginAuthValue = async (storedValue) => {
+  if (storedValue.startsWith('v3:')) {
+    return decryptV3(storedValue);
+  }
+  if (storedValue.includes(':')) {
+    return await decryptV2(storedValue);
+  }
+  return await decrypt(storedValue);
+};
 
 /**
  * Asynchronously retrieves and decrypts the authentication value for a user's plugin, based on a specified authentication field.
@@ -45,7 +63,7 @@ const getUserPluginAuthValue = async (userId, authField, throwError = true, plug
       throw new Error(`No plugin auth ${authField} found for user ${userId}${pluginInfo}`);
     }
 
-    const decryptedValue = await decrypt(pluginAuth.value);
+    const decryptedValue = await decryptPluginAuthValue(pluginAuth.value);
     return decryptedValue;
   } catch (err) {
     if (!throwError) {
@@ -93,7 +111,7 @@ const getUserPluginAuthValue = async (userId, authField, throwError = true, plug
  */
 const updateUserPluginAuth = async (userId, authField, pluginKey, value) => {
   try {
-    const encryptedValue = await encrypt(value);
+    const encryptedValue = await encryptV3(value);
     return await updatePluginAuth({
       userId,
       authField,
